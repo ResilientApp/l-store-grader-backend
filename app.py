@@ -450,14 +450,6 @@ def get_results_transaction(transaction_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-@app.route('/', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        return render_template('dashboard.html')
-    return render_template('dashboard.html')
-
-
 @app.route('/leaderboard', methods=['GET'])
 def leaderboard():
     """
