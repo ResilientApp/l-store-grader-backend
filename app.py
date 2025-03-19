@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from english_words import get_english_words_set
 from random import sample
@@ -27,21 +27,42 @@ from gql.transport.aiohttp import AIOHTTPTransport
 import nest_asyncio
 nest_asyncio.apply()
 
-# ----------------- Milestone Config -----------------
+# ------------------ Shared Config Loader ------------------
 """
-This dictionary controls which milestones are enabled and whether the extended version
-is enabled for each milestone. Adjust these boolean values to enable/disable as desired.
+We will dynamically fetch the milestone config from your GitHub raw JSON,
+convert it into a structure that your code can reference the same way 
+as the old MILESTONE_CONFIG.
 """
-MILESTONE_CONFIG = {
-    "milestone1": {"enabled": True, "extended_enabled": True},
-    "milestone2": {"enabled": True, "extended_enabled": True},
-    "milestone3": {"enabled": True, "extended_enabled": False},
-}
 
-# Load environment variables from .env file
+MILESTONE_CONFIG = {}
+
+def load_milestones_config():
+    """
+    Fetch the public milestones.json from GitHub and populate MILESTONE_CONFIG.
+    Example: https://raw.githubusercontent.com/ResilientApp/l-store-config/refs/heads/main/milestones.json
+    """
+    url = "https://raw.githubusercontent.com/ResilientApp/l-store-config/refs/heads/main/milestones.json"
+    try:
+        r = requests.get(url)
+        r.raise_for_status()
+        data = r.json()
+        # Convert from array into old dictionary structure
+        tmp_config = {}
+        for m in data["milestones"]:
+            tmp_config[m["id"]] = {
+                "enabled": bool(m["enabled"]),
+                "extended_enabled": bool(m["extendedEnabled"])
+            }
+        return tmp_config
+    except Exception as e:
+        print("Error loading milestones config:", e)
+        return {}
+
+# Attempt to load the config once at startup
+MILESTONE_CONFIG = load_milestones_config()
+
+# ----------------- Load environment variables -----------------
 load_dotenv()
-
-# Retrieve variables
 username = os.getenv('DB_USERNAME')
 password = os.getenv('DB_PASSWORD')
 host = os.getenv('DB_HOST')
@@ -250,7 +271,7 @@ async def run_ai_tests(lstore_folder, ai_timeout=300):
 def extract_commit_stats(folder_path):
     stats = {
         "local_git_commits": [],
-        "contributors": []  # We'll populate
+        "contributors": []
     }
 
     git_path = os.path.join(folder_path, ".git")
@@ -450,6 +471,7 @@ def get_results_transaction(transaction_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/leaderboard', methods=['GET'])
 def leaderboard():
     """
@@ -471,7 +493,7 @@ def leaderboard():
         submission_name = d.get("submission_name", "Unnamed Submission")
         passed = d.get("passed", 0)
         total_tests = d.get("total_tests", 0)
-        tx_id = d.get("resilientdb_tx_id", None)  # so front-end can link to it
+        tx_id = d.get("resilientdb_tx_id", None)
 
         perf = d.get("performance_results", {})
         # Summation of times
@@ -480,13 +502,12 @@ def leaderboard():
             if key.endswith("_time") and isinstance(val, (int, float)):
                 perf_sum += val
 
-        # Build the entry
         entry = {
             "name": submission_name,
-            "count": passed,        # test cases passed
+            "count": passed,
             "total": total_tests,
             "total_time": round(perf_sum, 3),
-            "tx_id": tx_id         # needed for /results/<tx_id>
+            "tx_id": tx_id
         }
         leaderboard_data.append(entry)
 
@@ -534,7 +555,6 @@ def show_results():
         timeout_val = 60
 
     # -- Convert user-provided AI test timeout (in seconds)
-    #    If not provided, default to 300 seconds
     try:
         if timeout_param:
             ai_timeout_val = float(timeout_param) * 60
@@ -546,20 +566,23 @@ def show_results():
     if not milestone:
         return jsonify({"error": "No milestone provided."}), 400
 
-    # Validate milestone against MILESTONE_CONFIG
+    # ====================== USE MILESTONE_CONFIG ======================
+    # Ensure the milestone is recognized
     if milestone not in MILESTONE_CONFIG:
-        return jsonify({"error": f"Milestone '{milestone}' is not recognized in MILESTONE_CONFIG."}), 400
+        return jsonify({"error": f"Milestone '{milestone}' is not recognized in shared config."}), 400
 
     # Check if this milestone is enabled
     if not MILESTONE_CONFIG[milestone]["enabled"]:
-        return jsonify({"error": f"Milestone '{milestone}' is disabled."}), 400
+        return jsonify({"error": f"Milestone '{milestone}' is disabled in shared config."}), 400
 
-    # If extended is true, check if milestone has extended enabled
+    # If extended is 'true', verify extended is allowed
     if extended_param == "true":
-        if MILESTONE_CONFIG[milestone].get("extended_enabled", False):
+        if MILESTONE_CONFIG[milestone]["extended_enabled"]:
+            # e.g. use "milestone1_extended"
             milestone = f"{milestone}_extended"
         else:
-            return jsonify({"error": f"Extended version of milestone '{milestone}' is not enabled."}), 400
+            return jsonify({"error": f"Extended version of '{milestone}' is not enabled."}), 400
+    # =================================================================
 
     unique_id = uuid.uuid4().hex
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -593,7 +616,7 @@ def show_results():
             else:
                 zip_file.extractall(lstore_path)
     elif github_repo:
-        # Clone directly into extract_path (no "repo" subfolder)
+        # Clone directly into extract_path
         lstore_path = extract_path
         try:
             subprocess.check_call(["git", "clone", github_repo, lstore_path])
@@ -620,9 +643,7 @@ def show_results():
     commit_stats = extract_commit_stats(extract_path)
     if github_repo:
         repo_stats = extract_commit_stats(lstore_path)
-        # store the raw lines for debugging
         commit_stats["github_repo_commits"] = repo_stats.get("local_git_commits", [])
-        # Merge contributors from local & github
         merged = merge_contributors(
             commit_stats.get("contributors", []),
             repo_stats.get("contributors", [])
@@ -643,7 +664,6 @@ def show_results():
         "performance_results": results,  # e.g. insert_time, update_time, etc.
         "ai_tests": ai_results,
         "commit_stats": commit_stats,
-        # Add total time spent in the entire pipeline
         "subprocess_total_time": total_subprocess_time
     }
 
